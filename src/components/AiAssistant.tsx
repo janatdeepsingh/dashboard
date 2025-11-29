@@ -42,82 +42,71 @@ const AiAssistantChat: React.FC<AiAssistantChatProps> = ({ stations }) => {
   const toggleChat = () => setChatOpen((prev) => !prev);
 
   const analyzeStationsWithAI = async (stations: Station[]) => {
-  setLoading(true);
-  setSuggestions([]);
-
-  let finalSuggestions: Suggestion[] = [];
-
-  try {
-    const response = await fetch("/api/analyzeStations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stations }),
-    });
-
-    if (!response.ok) throw new Error(`Server error: ${response.status}`);
-
-    const apiData = await response.json();
-    console.log("Raw API response:", apiData);
-
-    // Extract the content string from the first choice
-    const content = apiData.choices?.[0]?.message?.content || "";
-    // Remove any ```json ... ``` formatting
-    const cleanContent = content.replace(/```json|```/g, "").trim();
+    setLoading(true);
+    setSuggestions([]);
 
     try {
-      finalSuggestions = JSON.parse(cleanContent);
-      console.log("Parsed AI suggestions:", finalSuggestions);
-    } catch (parseError) {
-      console.error("JSON parsing failed, using fallback.", parseError);
-      finalSuggestions = [];
+      // Call serverless function
+      const response = await fetch("/api/analyzeStations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stations }),
+      });
+
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+      const suggestions: Suggestion[] = await response.json();
+      console.log("API suggestions received:", suggestions);
+
+      if (suggestions.length > 0) {
+        setSuggestions(suggestions);
+      } else {
+        console.warn("No suggestions returned from AI.");
+      }
+    } catch (error) {
+      console.error("Error fetching AI suggestions, using fallback:", error);
+
+      // Fallback: generate mock suggestions
+      const mockSuggestions: Suggestion[] = stations
+        .map((s) => {
+          if (s.latestReading?.temperature! > 30)
+            return {
+              stationName: s.info.name,
+              area: s.info.area,
+              parameter: "Temperature",
+              value: s.latestReading?.temperature!,
+              threshold: 30,
+              suggestion: "Deploy cooling systems or improve ventilation.",
+            };
+          if (s.latestReading?.emissions! > 150)
+            return {
+              stationName: s.info.name,
+              area: s.info.area,
+              parameter: "PM 2.5 Emissions",
+              value: s.latestReading?.emissions!,
+              threshold: 150,
+              suggestion:
+                "Implement carbon capture technologies or reduce operational hours.",
+            };
+          if (s.latestReading?.noise! > 85)
+            return {
+              stationName: s.info.name,
+              area: s.info.area,
+              parameter: "Noise",
+              value: s.latestReading?.noise!,
+              threshold: 85,
+              suggestion:
+                "Install noise barriers or schedule loud activities during off-peak hours.",
+            };
+          return null;
+        })
+        .filter(Boolean) as Suggestion[];
+
+      setSuggestions(mockSuggestions);
     }
-  } catch (error) {
-    console.error("Error fetching AI suggestions, using fallback:", error);
-    finalSuggestions = [];
-  }
 
-  // Fallback: if API fails or no suggestions returned
-  if (finalSuggestions.length === 0) {
-    finalSuggestions = stations
-      .map((s) => {
-        if (s.latestReading?.temperature! > 30)
-          return {
-            stationName: s.info.name,
-            area: s.info.area,
-            parameter: "Temperature",
-            value: s.latestReading?.temperature!,
-            threshold: 30,
-            suggestion: "Deploy cooling systems or improve ventilation.",
-          };
-        if (s.latestReading?.emissions! > 150)
-          return {
-            stationName: s.info.name,
-            area: s.info.area,
-            parameter: "PM 2.5 Emissions",
-            value: s.latestReading?.emissions!,
-            threshold: 150,
-            suggestion:
-              "Implement carbon capture technologies or reduce operational hours.",
-          };
-        if (s.latestReading?.noise! > 85)
-          return {
-            stationName: s.info.name,
-            area: s.info.area,
-            parameter: "Noise",
-            value: s.latestReading?.noise!,
-            threshold: 85,
-            suggestion:
-              "Install noise barriers or schedule loud activities during off-peak hours.",
-          };
-        return null;
-      })
-      .filter(Boolean) as Suggestion[];
-  }
-
-  setSuggestions(finalSuggestions);
-  setLoading(false);
-};
-
+    setLoading(false);
+  };
 
   return (
     <>
@@ -144,19 +133,19 @@ const AiAssistantChat: React.FC<AiAssistantChatProps> = ({ stations }) => {
       {chatOpen && (
         <Box
           sx={{
-    position: "fixed",
-    bottom: 0,
-    right: 24,
-    width: suggestions.length > 0 ? 480 : 360, // wider if we have responses
-    maxHeight: suggestions.length > 0 ? "100vh" : "70vh", // taller with responses
-    bgcolor: "#1f1f1f",
-    borderRadius: "12px 12px 0 0",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-    display: "flex",
-    flexDirection: "column",
-    zIndex: 1000,
-    transition: "all 0.3s ease-in-out", // smooth resize
-  }}
+            position: "fixed",
+            bottom: 0,
+            right: 24,
+            width: suggestions.length > 0 ? 480 : 360,
+            maxHeight: suggestions.length > 0 ? "100vh" : "70vh",
+            bgcolor: "#1f1f1f",
+            borderRadius: "12px 12px 0 0",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+            display: "flex",
+            flexDirection: "column",
+            zIndex: 1000,
+            transition: "all 0.3s ease-in-out",
+          }}
         >
           {/* Chat Header */}
           <Box
@@ -229,7 +218,15 @@ const AiAssistantChat: React.FC<AiAssistantChatProps> = ({ stations }) => {
                           <strong>Value:</strong> {s.value} (Threshold: {s.threshold})
                         </Typography>
                         <Typography>
-                          <strong>Suggestion:</strong> {s.suggestion}
+                          <strong>Suggestion:</strong>{" "}
+                          <span
+                            dangerouslySetInnerHTML={{
+                              __html: s.suggestion.replace(
+                                /\*\*(.*?)\*\*/g,
+                                "<strong>$1</strong>"
+                              ),
+                            }}
+                          />
                         </Typography>
                       </Box>
                     ))}
