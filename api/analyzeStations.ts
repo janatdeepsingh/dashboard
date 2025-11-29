@@ -1,6 +1,5 @@
 // /api/analyzeStations.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import JSON5 from "json5";
 
 type Station = {
   info: { name: string; area: string };
@@ -19,7 +18,7 @@ type Suggestion = {
 // --- In-memory cache (2 minutes)
 let cache: { time: number; data: Suggestion[] } | null = null;
 
-// --- In-memory lock to prevent concurrent API calls per instance
+// --- Lock to prevent concurrent API calls per serverless instance
 let apiBusy = false;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -157,17 +156,15 @@ Format:
       return res.status(200).json(mockSuggestions);
     }
 
-    // --- Safe JSON parse
+    // --- Strip Markdown / backticks before parsing JSON
+    const cleanText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+
     let suggestions: Suggestion[];
     try {
-      suggestions = JSON.parse(rawText);
-    } catch {
-      try {
-        suggestions = JSON5.parse(rawText);
-      } catch (err) {
-        console.error("JSON parsing failed, using mock data.", err);
-        suggestions = mockSuggestions;
-      }
+      suggestions = JSON.parse(cleanText);
+    } catch (err) {
+      console.error("JSON parsing failed after cleaning, using mock data.", err);
+      suggestions = mockSuggestions;
     }
 
     // --- Update cache
