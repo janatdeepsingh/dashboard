@@ -1,4 +1,6 @@
+// /api/analyzeStations.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import JSON5 from "json5";
 
 type Station = {
   info: { name: string; area: string };
@@ -14,20 +16,21 @@ type Suggestion = {
   suggestion: string;
 };
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse
-) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+// --- In-memory cache (simple) ---
+let cache: { time: number; data: Suggestion[] } | null = null;
 
-  if (!process.env.MISTRAL_API_KEY) {
-    return res.status(500).json({ error: "Missing API KEY" });
-  }
+// Optional: in-memory lock to prevent concurrent API calls
+let apiBusy = false;
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
   const stations: Station[] = req.body.stations;
-  if (!stations || !Array.isArray(stations)) {
-    return res.status(400).json({ error: "stations array is required" });
+  if (!stations || !Array.isArray(stations)) return res.status(400).json({ error: "stations array is required" });
+
+  // --- Check cache (valid for 2 minutes) ---
+  if (cache && Date.now() - cache.time < 2 * 60 * 1000) {
+    return res.status(200).json(cache.data);
   }
 
   const problematicStations = stations.filter(
@@ -38,19 +41,18 @@ export default async function handler(
         s.latestReading.noise! > 85)
   );
 
-  if (problematicStations.length === 0) {
-    return res.status(200).json([]);
-  }
+  if (problematicStations.length === 0) return res.status(200).json([]);
 
+  // Prepare prompt for AI
   const data = problematicStations
     .map(
       (s) => `
-      - Station: ${s.info.name}
-      - Station Area: ${s.info.area}
-        - Temperature: ${s.latestReading?.temperature}°C
-        - PM 2.5 Emissions: ${s.latestReading?.emissions} ppm
-        - Noise: ${s.latestReading?.noise} dB
-    `
+- Station: ${s.info.name}
+- Station Area: ${s.info.area}
+  - Temperature: ${s.latestReading?.temperature}°C
+  - PM 2.5 Emissions: ${s.latestReading?.emissions} ppm
+  - Noise: ${s.latestReading?.noise} dB
+`
     )
     .join("");
 
@@ -60,19 +62,67 @@ Analyze the following **live sensor data** and provide **specific, actionable mi
 Data:
 ${data}
 
-Output as **valid JSON only** using double quotes for property names and string values.
+Output as **valid JSON only** using double quotes for keys and string values. Do NOT include Markdown or extra text.
 Format:
 [
   {
     "stationName": "Station Name",
     "area": "Station Area",
     "parameter": "Temperature" | "PM 2.5 Emissions" | "Noise",
-    "value": <reading_value>,
-    "threshold": <threshold_value>,
+    "value": <number>,
+    "threshold": <number>,
     "suggestion": "Concise, locally applicable mitigation step."
   }
 ]
 `;
+
+  // --- Prepare mock fallback data ---
+  const mockSuggestions: Suggestion[] = problematicStations
+    .map((s) => {
+      if (s.latestReading?.temperature! > 30)
+        return {
+          stationName: s.info.name,
+          area: s.info.area,
+          parameter: "Temperature",
+          value: s.latestReading?.temperature!,
+          threshold: 30,
+          suggestion: "Deploy cooling systems or improve ventilation.",
+        };
+      if (s.latestReading?.emissions! > 150)
+        return {
+          stationName: s.info.name,
+          area: s.info.area,
+          parameter: "PM 2.5 Emissions",
+          value: s.latestReading?.emissions!,
+          threshold: 150,
+          suggestion: "Implement carbon capture or reduce operational hours.",
+        };
+      if (s.latestReading?.noise! > 85)
+        return {
+          stationName: s.info.name,
+          area: s.info.area,
+          parameter: "Noise",
+          value: s.latestReading?.noise!,
+          threshold: 85,
+          suggestion: "Install noise barriers or schedule loud activities off-peak.",
+        };
+      return null;
+    })
+    .filter(Boolean) as Suggestion[];
+
+  // --- Check API key ---
+  if (!process.env.MISTRAL_API_KEY) {
+    console.warn("Missing MISTRAL_API_KEY. Returning mock data.");
+    return res.status(200).json(mockSuggestions);
+  }
+
+  // --- Prevent concurrent API calls ---
+  if (apiBusy) {
+    console.warn("API busy. Returning mock data.");
+    return res.status(200).json(mockSuggestions);
+  }
+
+  apiBusy = true;
 
   try {
     const apiResponse = await fetch("https://api.mistral.ai/v1/chat/completions", {
@@ -86,8 +136,7 @@ Format:
         messages: [
           {
             role: "system",
-            content:
-              "You are an environmental specialist analyzing live sensor station data.",
+            content: "You are an environmental specialist analyzing live sensor station data.",
           },
           { role: "user", content: prompt },
         ],
@@ -95,54 +144,36 @@ Format:
       }),
     });
 
-    if (!apiResponse.ok)
-      throw new Error(`API error ${apiResponse.status}`);
+    if (!apiResponse.ok) {
+      console.warn(`Mistral API error: ${apiResponse.status}`);
+      if (apiResponse.status === 429) console.warn("Rate limit hit!");
+      return res.status(200).json(mockSuggestions); // fallback
+    }
 
-    const aiData : any = await apiResponse.json();
+    const aiData: any = await apiResponse.json();
     const content = aiData?.choices?.[0]?.message?.content || "";
 
-    const cleanContent = content.replace(/```json|```/g, "").replace(/\*\*/g, "").trim();
-    const suggestions: Suggestion[] = JSON.parse(cleanContent);
+    // --- Safe parsing using JSON5 as fallback ---
+    let suggestions: Suggestion[];
+    try {
+      suggestions = JSON.parse(content);
+    } catch {
+      try {
+        suggestions = JSON5.parse(content);
+      } catch (err) {
+        console.error("JSON parsing failed, using mock data.", err);
+        suggestions = mockSuggestions;
+      }
+    }
+
+    // --- Update cache ---
+    cache = { time: Date.now(), data: suggestions };
 
     return res.status(200).json(suggestions);
-  } catch (error) {
-    console.error("AI request failed:", error);
-
-    // Fallback: generate mock suggestions
-    const mockSuggestions: Suggestion[] = problematicStations
-      .map((s) => {
-        if (s.latestReading?.temperature! > 30)
-          return {
-            stationName: s.info.name,
-            area: s.info.area,
-            parameter: "Temperature",
-            value: s.latestReading?.temperature!,
-            threshold: 30,
-            suggestion: "Deploy cooling systems or improve ventilation.",
-          };
-        if (s.latestReading?.emissions! > 150)
-          return {
-            stationName: s.info.name,
-            area: s.info.area,
-            parameter: "PM 2.5 Emissions",
-            value: s.latestReading?.emissions!,
-            threshold: 150,
-            suggestion: "Implement carbon capture or reduce operational hours.",
-          };
-        if (s.latestReading?.noise! > 85)
-          return {
-            stationName: s.info.name,
-            area: s.info.area,
-            parameter: "Noise",
-            value: s.latestReading?.noise!,
-            threshold: 85,
-            suggestion:
-              "Install noise barriers or schedule loud activities off-peak.",
-          };
-        return null;
-      })
-      .filter(Boolean) as Suggestion[];
-
+  } catch (err) {
+    console.error("AI request failed, returning mock data.", err);
     return res.status(200).json(mockSuggestions);
+  } finally {
+    apiBusy = false;
   }
 }
