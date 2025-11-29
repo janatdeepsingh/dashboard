@@ -15,11 +15,9 @@ type Suggestion = {
   suggestion: string;
 };
 
-// --- In-memory cache (2 minutes)
+// --- Simple in-memory cache (2 minutes)
 let cache: { time: number; data: Suggestion[] } | null = null;
-
-// --- Lock to prevent concurrent API calls per serverless instance
-let apiBusy = false;
+let apiBusy = false; // Prevent concurrent API calls per instance
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -27,11 +25,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const stations: Station[] = req.body.stations;
   if (!stations || !Array.isArray(stations)) return res.status(400).json({ error: "stations array is required" });
 
-  // --- Check cache
-  if (cache && Date.now() - cache.time < 2 * 60 * 1000) {
-    return res.status(200).json(cache.data);
-  }
-
+  // --- Filter problematic stations
   const problematicStations = stations.filter(
     (s) =>
       s.latestReading &&
@@ -40,9 +34,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         s.latestReading.noise! > 85)
   );
 
-  if (problematicStations.length === 0) return res.status(200).json([]);
+  console.log("Problematic stations:", problematicStations.map((s) => s.info.name));
 
-  // --- Prepare prompt
+  if (problematicStations.length === 0) return res.status(200).json([]); // nothing to analyze
+
+  // --- Prepare prompt for AI
   const data = problematicStations
     .map(
       (s) => `
@@ -61,8 +57,8 @@ Analyze the following **live sensor data** and provide **specific, actionable mi
 Data:
 ${data}
 
-Output as **valid JSON only** using double quotes for keys and string values. Do NOT include Markdown or extra text.
-Format:
+Output as **valid JSON only**, no Markdown. Format:
+
 [
   {
     "stationName": "Station Name",
@@ -75,7 +71,7 @@ Format:
 ]
 `;
 
-  // --- Mock fallback
+  // --- Fallback mock data
   const mockSuggestions: Suggestion[] = problematicStations
     .map((s) => {
       if (s.latestReading?.temperature! > 30)
@@ -109,13 +105,12 @@ Format:
     })
     .filter(Boolean) as Suggestion[];
 
-  // --- Check API key
+  // --- API key check
   if (!process.env.MISTRAL_API_KEY) {
     console.warn("Missing MISTRAL_API_KEY. Returning mock data.");
     return res.status(200).json(mockSuggestions);
   }
 
-  // --- Prevent concurrent API calls
   if (apiBusy) {
     console.warn("API busy. Returning cached or mock data.");
     if (cache) return res.status(200).json(cache.data);
@@ -134,17 +129,13 @@ Format:
       body: JSON.stringify({
         model: "mistral-large-latest",
         messages: [
-          {
-            role: "system",
-            content: "You are an environmental specialist analyzing live sensor station data.",
-          },
+          { role: "system", content: "You are an environmental specialist analyzing live sensor station data." },
           { role: "user", content: prompt },
         ],
         temperature: 0.7,
       }),
     });
 
-    // --- Log raw response for debugging
     const rawText = await apiResponse.text();
     console.log("=== RAW AI RESPONSE ===");
     console.log(rawText);
@@ -152,24 +143,20 @@ Format:
 
     if (!apiResponse.ok) {
       console.warn(`Mistral API error: ${apiResponse.status}`);
-      if (apiResponse.status === 429) console.warn("Rate limit hit!");
       return res.status(200).json(mockSuggestions);
     }
 
-    // --- Strip Markdown / backticks before parsing JSON
     const cleanText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
 
     let suggestions: Suggestion[];
     try {
       suggestions = JSON.parse(cleanText);
     } catch (err) {
-      console.error("JSON parsing failed after cleaning, using mock data.", err);
+      console.error("JSON parsing failed, returning mock data.", err);
       suggestions = mockSuggestions;
     }
 
-    // --- Update cache
     cache = { time: Date.now(), data: suggestions };
-
     return res.status(200).json(suggestions);
   } catch (err) {
     console.error("AI request failed, returning mock data.", err);

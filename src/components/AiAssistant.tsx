@@ -42,85 +42,69 @@ const AiAssistantChat: React.FC<AiAssistantChatProps> = ({ stations }) => {
   const toggleChat = () => setChatOpen((prev) => !prev);
 
   const analyzeStationsWithAI = async (stations: Station[]) => {
-    setLoading(true);
-    setSuggestions([]);
-  
-    // Filter only problematic stations
-    const problematicStations = stations.filter(
-      (s) =>
-        s.latestReading &&
-        (s.latestReading.temperature! > 30 ||
-          s.latestReading.emissions! > 150 ||
-          s.latestReading.noise! > 85)
-    );
-  
-    if (problematicStations.length === 0) {
-      setLoading(false);
-      return;
-    }
-  
-    try {
-      // Call serverless function
-      const response = await fetch("/api/analyzeStations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stations: problematicStations }),
-      });
-  
-      if (!response.ok) throw new Error(`Server error: ${response.status}`);
-  
-      const suggestions: Suggestion[] = await response.json();
-  
-      if (suggestions.length > 0) {
-        setSuggestions(suggestions);
-      } else {
-        console.warn("No suggestions returned from AI.");
-      }
-    } catch (error) {
-      console.error("Error fetching AI suggestions, using fallback:", error);
-  
-      // Fallback: generate mock suggestions
-      const mockSuggestions: Suggestion[] = problematicStations
-        .map((s) => {
-          if (s.latestReading?.temperature! > 30)
-            return {
-              stationName: s.info.name,
-              area: s.info.area,
-              parameter: "Temperature",
-              value: s.latestReading?.temperature!,
-              threshold: 30,
-              suggestion: "Deploy cooling systems or improve ventilation.",
-            };
-          if (s.latestReading?.emissions! > 150)
-            return {
-              stationName: s.info.name,
-              area: s.info.area,
-              parameter: "PM 2.5 Emissions",
-              value: s.latestReading?.emissions!,
-              threshold: 150,
-              suggestion:
-                "Implement carbon capture technologies or reduce operational hours.",
-            };
-          if (s.latestReading?.noise! > 85)
-            return {
-              stationName: s.info.name,
-              area: s.info.area,
-              parameter: "Noise",
-              value: s.latestReading?.noise!,
-              threshold: 85,
-              suggestion:
-                "Install noise barriers or schedule loud activities during off-peak hours.",
-            };
-          return null;
-        })
-        .filter(Boolean) as Suggestion[];
-  
-      setSuggestions(mockSuggestions);
-    }
-    console.log("API suggestions received:", suggestions);
+  setLoading(true);
+  setSuggestions([]);
 
-    setLoading(false);
-  };
+  let finalSuggestions: Suggestion[] = [];
+
+  try {
+    // Call serverless function
+    const response = await fetch("/api/analyzeStations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stations }),
+    });
+
+    if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+    const apiSuggestions: Suggestion[] = await response.json();
+    console.log("API suggestions received:", apiSuggestions);
+
+    finalSuggestions = apiSuggestions.length > 0 ? apiSuggestions : [];
+  } catch (error) {
+    console.error("Error fetching AI suggestions, using fallback:", error);
+
+    // Fallback: generate mock suggestions
+    finalSuggestions = stations
+      .map((s) => {
+        if (s.latestReading?.temperature! > 30)
+          return {
+            stationName: s.info.name,
+            area: s.info.area,
+            parameter: "Temperature",
+            value: s.latestReading?.temperature!,
+            threshold: 30,
+            suggestion: "Deploy cooling systems or improve ventilation.",
+          };
+        if (s.latestReading?.emissions! > 150)
+          return {
+            stationName: s.info.name,
+            area: s.info.area,
+            parameter: "PM 2.5 Emissions",
+            value: s.latestReading?.emissions!,
+            threshold: 150,
+            suggestion:
+              "Implement carbon capture technologies or reduce operational hours.",
+          };
+        if (s.latestReading?.noise! > 85)
+          return {
+            stationName: s.info.name,
+            area: s.info.area,
+            parameter: "Noise",
+            value: s.latestReading?.noise!,
+            threshold: 85,
+            suggestion:
+              "Install noise barriers or schedule loud activities during off-peak hours.",
+          };
+        return null;
+      })
+      .filter(Boolean) as Suggestion[];
+  }
+
+  console.log("Final suggestions to render:", finalSuggestions);
+  setSuggestions(finalSuggestions); // ✅ ensure UI gets updated
+  setLoading(false);
+};
 
   return (
     <>
