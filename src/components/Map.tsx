@@ -8,6 +8,12 @@ import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import markerShadow from "leaflet/dist/images/marker-shadow.png";
 // leaflet-default-icon-issue-solution
+interface DefaultIcon extends L.Icon.Default {
+  _getIconUrl?: () => string;
+}
+
+// @ts-ignore
+(delete L.Icon.Default.prototype as DefaultIcon)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
   iconUrl: markerIcon,
