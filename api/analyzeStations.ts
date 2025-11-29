@@ -16,10 +16,10 @@ type Suggestion = {
   suggestion: string;
 };
 
-// --- In-memory cache (simple) ---
+// --- In-memory cache (2 minutes)
 let cache: { time: number; data: Suggestion[] } | null = null;
 
-// Optional: in-memory lock to prevent concurrent API calls
+// --- In-memory lock to prevent concurrent API calls per instance
 let apiBusy = false;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -28,7 +28,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const stations: Station[] = req.body.stations;
   if (!stations || !Array.isArray(stations)) return res.status(400).json({ error: "stations array is required" });
 
-  // --- Check cache (valid for 2 minutes) ---
+  // --- Check cache
   if (cache && Date.now() - cache.time < 2 * 60 * 1000) {
     return res.status(200).json(cache.data);
   }
@@ -43,7 +43,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (problematicStations.length === 0) return res.status(200).json([]);
 
-  // Prepare prompt for AI
+  // --- Prepare prompt
   const data = problematicStations
     .map(
       (s) => `
@@ -76,7 +76,7 @@ Format:
 ]
 `;
 
-  // --- Prepare mock fallback data ---
+  // --- Mock fallback
   const mockSuggestions: Suggestion[] = problematicStations
     .map((s) => {
       if (s.latestReading?.temperature! > 30)
@@ -110,72 +110,74 @@ Format:
     })
     .filter(Boolean) as Suggestion[];
 
-  // --- Check API key ---
+  // --- Check API key
   if (!process.env.MISTRAL_API_KEY) {
     console.warn("Missing MISTRAL_API_KEY. Returning mock data.");
     return res.status(200).json(mockSuggestions);
   }
 
-  // --- Prevent concurrent API calls ---
+  // --- Prevent concurrent API calls
   if (apiBusy) {
-    console.warn("API busy. Returning mock data.");
+    console.warn("API busy. Returning cached or mock data.");
+    if (cache) return res.status(200).json(cache.data);
     return res.status(200).json(mockSuggestions);
   }
 
   apiBusy = true;
 
   try {
-  const apiResponse = await fetch("https://api.mistral.ai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.MISTRAL_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "mistral-large-latest",
-      messages: [
-        {
-          role: "system",
-          content: "You are an environmental specialist analyzing live sensor station data.",
-        },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.7,
-    }),
-  });
+    const apiResponse = await fetch("https://api.mistral.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.MISTRAL_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "mistral-large-latest",
+        messages: [
+          {
+            role: "system",
+            content: "You are an environmental specialist analyzing live sensor station data.",
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.7,
+      }),
+    });
 
-  if (!apiResponse.ok) {
-    console.warn(`Mistral API error: ${apiResponse.status}`);
-    if (apiResponse.status === 429) console.warn("Rate limit hit!");
-    return res.status(200).json(mockSuggestions); // fallback
-  }
+    // --- Log raw response for debugging
+    const rawText = await apiResponse.text();
+    console.log("=== RAW AI RESPONSE ===");
+    console.log(rawText);
+    console.log("======================");
 
-  // --- Log raw response text for debugging ---
-  const rawText = await apiResponse.text();
-  console.log("=== RAW AI RESPONSE ===");
-  console.log(rawText);  // <-- TEMP: see exactly what AI returned
-  console.log("======================");
-
-  // --- Attempt parsing ---
-  let suggestions: Suggestion[];
-  try {
-    suggestions = JSON.parse(rawText);
-  } catch {
-    try {
-      suggestions = JSON5.parse(rawText);
-    } catch (err) {
-      console.error("JSON parsing failed, using mock data.", err);
-      suggestions = mockSuggestions;
+    if (!apiResponse.ok) {
+      console.warn(`Mistral API error: ${apiResponse.status}`);
+      if (apiResponse.status === 429) console.warn("Rate limit hit!");
+      return res.status(200).json(mockSuggestions);
     }
-  }
 
-  // --- Cache & return ---
-  cache = { time: Date.now(), data: suggestions };
-  return res.status(200).json(suggestions);
-} catch (err) {
-  console.error("AI request failed, returning mock data.", err);
-  return res.status(200).json(mockSuggestions);
-} finally {
-  apiBusy = false;
-}
+    // --- Safe JSON parse
+    let suggestions: Suggestion[];
+    try {
+      suggestions = JSON.parse(rawText);
+    } catch {
+      try {
+        suggestions = JSON5.parse(rawText);
+      } catch (err) {
+        console.error("JSON parsing failed, using mock data.", err);
+        suggestions = mockSuggestions;
+      }
+    }
+
+    // --- Update cache
+    cache = { time: Date.now(), data: suggestions };
+
+    return res.status(200).json(suggestions);
+  } catch (err) {
+    console.error("AI request failed, returning mock data.", err);
+    return res.status(200).json(mockSuggestions);
+  } finally {
+    apiBusy = false;
+  }
 }
