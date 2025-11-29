@@ -117,7 +117,8 @@ const AiAssistantChat: React.FC<AiAssistantChatProps> = ({ stations }) => {
   
       setSuggestions(mockSuggestions);
     }
-  
+    console.log("API suggestions received:", suggestions);
+
     setLoading(false);
   };
 
