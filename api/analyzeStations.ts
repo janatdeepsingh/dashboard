@@ -54,6 +54,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const prompt = `
 You are an expert in environmental monitoring and Indian urban infrastructure.
 Analyze the following **live sensor data** and provide **specific, actionable mitigation suggestions** for any parameter exceeding Indian standards.
+IMPORTANT: Respond in plain text JSON only. 
+Do NOT include Markdown, asterisks, backticks, or any special formatting. 
+Each suggestion should have: stationName, area, parameter, value, threshold, suggestion.
+
 Data:
 ${data}
 
